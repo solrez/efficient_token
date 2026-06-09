@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+*.egg
+dist/
+build/
+*.whl
+
+# Virtual environment
+.venv/
+venv/
+
+# Environment variables
+.env
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docker volumes
+langfuse_pgdata/
+langfuse_clickhouse_data/
+langfuse_clickhouse_logs/
+langfuse_minio_data/
+langfuse_redis_data/
+
+# Benchmark results (regeneratable)
+results*.csv
