@@ -85,7 +85,7 @@ class BenchmarkRunner:
         registry = create_default_registry()
         tracing = TracingManager(config, session_id=self.results.session_id)
 
-        callback = tracing.create_callback(scenario.name, flags)
+        callback = tracing.create_callback()
         callbacks = [callback] if callback else []
 
         graph = build_agent_graph(config, registry=registry, callbacks=callbacks)
@@ -99,10 +99,11 @@ class BenchmarkRunner:
 
         start = time.perf_counter()
         try:
-            result = await graph.ainvoke(
-                initial_state,
-                config={"callbacks": callbacks, "recursion_limit": config.max_steps * 3},
-            )
+            with tracing.trace_context(scenario.name, flags):
+                result = await graph.ainvoke(
+                    initial_state,
+                    config={"callbacks": callbacks, "recursion_limit": config.max_steps * 3},
+                )
         except Exception as e:
             console.print(f"         [red]Error: {e}[/red]")
             return RunMetrics(
@@ -112,11 +113,7 @@ class BenchmarkRunner:
             )
         elapsed_ms = (time.perf_counter() - start) * 1000
 
-        if callback:
-            try:
-                callback.flush()
-            except Exception:
-                pass
+        tracing.flush()
 
         metrics = extract_metrics_from_messages(
             messages=result["messages"],

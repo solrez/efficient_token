@@ -83,8 +83,9 @@ async def _run_single(config: AgentConfig, scenario_name: str):
     console.print(f"[bold]Optimizations:[/bold] {opts.label()}")
     console.print()
 
-    tracing = TracingManager(config)
-    callback = tracing.create_callback(scenario_name, opts)
+    import uuid
+    tracing = TracingManager(config, session_id=str(uuid.uuid4())[:8])
+    callback = tracing.create_callback()
     callbacks = [callback] if callback else []
 
     registry = create_default_registry()
@@ -101,10 +102,12 @@ async def _run_single(config: AgentConfig, scenario_name: str):
     import time
     start = time.perf_counter()
 
-    result = await graph.ainvoke(
-        initial_state,
-        config={"callbacks": callbacks, "recursion_limit": config.max_steps * 3},
-    )
+    with tracing.trace_context(scenario_name, opts):
+        result = await graph.ainvoke(
+            initial_state,
+            config={"callbacks": callbacks, "recursion_limit": config.max_steps * 3},
+        )
+    tracing.flush()
 
     elapsed_ms = (time.perf_counter() - start) * 1000
 

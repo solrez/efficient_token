@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import os
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 
-from langchain_core.messages import BaseMessage, AIMessage
+from langchain_core.messages import BaseMessage
 
 from token_efficient_agent.config import (
     AgentConfig,
@@ -95,58 +97,87 @@ def extract_metrics_from_messages(
 
 
 class TracingManager:
-    """Manages Langfuse tracing with optimization-aware metadata."""
+    """Manages Langfuse tracing with optimization-aware metadata.
+
+    Uses the v4 SDK pattern: propagate_attributes() context manager for
+    session_id, metadata, and tags. CallbackHandler is instantiated without
+    those fields (v4 removed them from the constructor).
+    """
 
     def __init__(self, config: AgentConfig, session_id: str | None = None) -> None:
         self.config = config
         self.session_id = session_id
-        self._langfuse = None
+        self._connected = False
 
         if config.tracing.enabled and config.tracing.langfuse_secret_key:
-            import os
             os.environ["LANGFUSE_PUBLIC_KEY"] = config.tracing.langfuse_public_key
             os.environ["LANGFUSE_SECRET_KEY"] = config.tracing.langfuse_secret_key
             os.environ["LANGFUSE_HOST"] = config.tracing.langfuse_host
 
             try:
                 from langfuse import Langfuse
-
-                self._langfuse = Langfuse()
-                self._langfuse.auth_check()
+                lf = Langfuse()
+                lf.auth_check()
+                self._connected = True
                 print(f"  [Langfuse] Connected to {config.tracing.langfuse_host}")
             except Exception as e:
                 print(f"  [Langfuse] Connection failed: {e}")
-                self._langfuse = None
 
-    def create_callback(
+    def create_callback(self):
+        """Create a Langfuse CallbackHandler (v4 style — no session/metadata in constructor)."""
+        if not self._connected:
+            return None
+
+        from langfuse.langchain import CallbackHandler
+        return CallbackHandler()
+
+    @contextmanager
+    def trace_context(
         self,
         scenario_name: str,
         optimization_flags: OptimizationFlags,
     ):
-        """Create a Langfuse callback handler for a single agent run."""
-        if not self._langfuse:
-            return None
+        """Context manager that sets session_id, metadata, and tags via propagate_attributes.
 
-        from langfuse.langchain import CallbackHandler
+        Usage:
+            with tracing.trace_context(scenario, flags):
+                result = await graph.ainvoke(...)
+        """
+        if not self._connected:
+            yield
+            return
 
-        handler = CallbackHandler(
-            trace_context={
-                "name": f"{scenario_name}/{optimization_flags.label()}",
-                "session_id": self.session_id,
-                "metadata": {
-                    "prompt_caching": optimization_flags.prompt_caching,
-                    "tool_pruning": optimization_flags.tool_pruning,
-                    "progressive_disclosure": optimization_flags.progressive_disclosure,
-                    "observation_masking": optimization_flags.observation_masking,
-                    "observation_masking_window": optimization_flags.observation_masking_window,
-                    "model_routing": optimization_flags.model_routing,
-                    "provider": self.config.provider.value,
-                },
-                "tags": [
-                    f"scenario:{scenario_name}",
-                    f"opt:{optimization_flags.label()}",
-                    f"provider:{self.config.provider.value}",
-                ],
-            },
-        )
-        return handler
+        from langfuse import propagate_attributes
+
+        metadata = {
+            "prompt_caching": str(optimization_flags.prompt_caching),
+            "tool_pruning": str(optimization_flags.tool_pruning),
+            "progressive_disclosure": str(optimization_flags.progressive_disclosure),
+            "observation_masking": str(optimization_flags.observation_masking),
+            "observation_masking_window": str(optimization_flags.observation_masking_window),
+            "model_routing": str(optimization_flags.model_routing),
+            "provider": self.config.provider.value,
+        }
+
+        tags = [
+            f"scenario:{scenario_name}",
+            f"opt:{optimization_flags.label()}",
+            f"provider:{self.config.provider.value}",
+        ]
+
+        with propagate_attributes(
+            session_id=self.session_id,
+            trace_name=f"{scenario_name}/{optimization_flags.label()}",
+            metadata=metadata,
+            tags=tags,
+        ):
+            yield
+
+    def flush(self):
+        """Flush any pending Langfuse events."""
+        if self._connected:
+            try:
+                from langfuse import get_client
+                get_client().flush()
+            except Exception:
+                pass
