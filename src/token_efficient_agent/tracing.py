@@ -79,12 +79,16 @@ def extract_metrics_from_messages(
             continue
 
         cache_info = usage.get("input_token_details", {}) or {}
+        cache_read = cache_info.get("cache_read", 0) or 0
+        cache_write = cache_info.get("cache_creation", 0) or 0
+        if not cache_read:
+            cache_read = cache_info.get("cached_tokens", 0) or 0
         step = StepMetrics(
             model=model_name,
             input_tokens=usage.get("input_tokens", 0),
             output_tokens=usage.get("output_tokens", 0),
-            cache_read_tokens=cache_info.get("cache_read", 0) or 0,
-            cache_write_tokens=cache_info.get("cache_creation", 0) or 0,
+            cache_read_tokens=cache_read,
+            cache_write_tokens=cache_write,
         )
         metrics.steps.append(step)
         metrics.total_input_tokens += step.input_tokens

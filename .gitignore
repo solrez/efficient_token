@@ -33,3 +33,10 @@ langfuse_redis_data/
 
 # Benchmark results (regeneratable)
 results*.csv
+
+# BFCL test data (downloaded separately)
+data/
+
+# Internal docs (not for repo)
+docs/
+results/

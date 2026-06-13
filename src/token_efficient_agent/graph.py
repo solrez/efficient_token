@@ -47,7 +47,10 @@ def build_agent_graph(
             messages.insert(0, SystemMessage(content=SYSTEM_PROMPT))
 
         if opts.observation_masking:
-            messages = apply_observation_masking(messages, opts.observation_masking_window)
+            messages = apply_observation_masking(
+                messages, opts.observation_masking_window,
+                use_llm=opts.observation_masking_llm,
+            )
 
         if opts.prompt_caching:
             messages = apply_cache_layout(messages, config.provider)
