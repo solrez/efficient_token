@@ -40,3 +40,5 @@ data/
 # Internal docs (not for repo)
 docs/
 results/
+paper/
+run_statistical_runs.sh

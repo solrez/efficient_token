@@ -159,7 +159,7 @@ class SignalValidationRunner:
         if self.domain == "retail":
             from tau_bench.envs.retail.tasks_test import TASKS_TEST as _tasks
         else:
-            from tau_bench.envs.airline.tasks_test import TASKS_TEST as _tasks
+            from tau_bench.envs.airline.tasks_test import TASKS as _tasks
 
         task_ids = self.task_ids
         if task_ids is None:

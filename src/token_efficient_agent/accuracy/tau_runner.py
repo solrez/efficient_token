@@ -608,15 +608,25 @@ def _mask_old_tool_outputs(
 ) -> list[dict]:
     """Content-aware masking: replace old tool outputs with compact summaries.
 
-    Two modes:
-    - regex (default): Fast, free, extracts IDs/statuses/names via patterns
-    - llm: Uses a cheap small model to summarize, better for unstructured content
+    Preserves still-referenced outputs: older tool outputs whose key
+    identifiers still appear in recent assistant/user messages are kept.
     """
     tool_indices = [i for i, m in enumerate(messages) if m.get("role") == "tool"]
     if len(tool_indices) <= window_k:
         return messages
 
-    indices_to_mask = set(tool_indices[:-window_k])
+    recency_keep = set(tool_indices[-window_k:])
+    candidates = [i for i in tool_indices if i not in recency_keep]
+
+    recent_text = _collect_recent_text(messages, lookback=6)
+
+    indices_to_mask = set()
+    for i in candidates:
+        content = messages[i].get("content", "")
+        if _is_still_referenced(content, recent_text):
+            continue
+        indices_to_mask.add(i)
+
     result = []
     for i, msg in enumerate(messages):
         if i in indices_to_mask:
@@ -633,6 +643,51 @@ def _mask_old_tool_outputs(
         else:
             result.append(msg)
     return result
+
+
+def _collect_recent_text(messages: list[dict], lookback: int) -> str:
+    parts = []
+    count = 0
+    for msg in reversed(messages):
+        role = msg.get("role", "")
+        if role in ("assistant", "user"):
+            content = msg.get("content", "") or ""
+            tc = msg.get("tool_calls") or []
+            if tc:
+                for call in tc:
+                    fn = call.get("function", {})
+                    content += " " + fn.get("name", "")
+                    content += " " + fn.get("arguments", "")
+            parts.append(content)
+            count += 1
+            if count >= lookback:
+                break
+    return " ".join(parts)
+
+
+def _is_still_referenced(tool_content: str, recent_text: str) -> bool:
+    if not tool_content or not recent_text:
+        return False
+    import re
+    recent_lower = recent_text.lower()
+
+    identifiers = re.findall(
+        r'["\']?(?:id|order_id|user_id|product_id|reservation_id|booking_id|flight_number|confirmation)["\']?\s*[:=]\s*["\']?([#\w-]{3,})',
+        tool_content, re.IGNORECASE,
+    )
+    for ident in identifiers:
+        if ident.lower() in recent_lower:
+            return True
+
+    names = re.findall(
+        r'["\']?(?:name|first_name|last_name)["\']?\s*[:=]\s*["\']?([A-Z][a-z]{2,})',
+        tool_content,
+    )
+    for name in names:
+        if name.lower() in recent_lower:
+            return True
+
+    return False
 
 
 def _extract_key_info(tool_name: str, content: str) -> str:
