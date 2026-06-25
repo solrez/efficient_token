@@ -18,7 +18,7 @@ litellm.suppress_debug_info = True
 
 from token_efficient_agent.config import (
     AgentConfig, OptimizationFlags, ModelTier, ProviderType,
-    INPUT_COST_PER_MTOK, OUTPUT_COST_PER_MTOK,
+    INPUT_COST_PER_MTOK, OUTPUT_COST_PER_MTOK, CACHE_READ_COST_PER_MTOK,
 )
 from adaptive_compression.uncertainty import LogprobEstimator
 from adaptive_compression.controller import (
@@ -49,6 +49,7 @@ class AdaptiveTaskResult:
     total_cost: float
     total_input_tokens: int
     total_output_tokens: int
+    total_cached_tokens: int = 0
     step_logs: list[AdaptiveStepLog] = field(default_factory=list)
     controller_stats: dict = field(default_factory=dict)
 
@@ -96,6 +97,7 @@ class AdaptiveTauAgent:
         total_cost = 0.0
         total_input = 0
         total_output = 0
+        total_cached = 0
         step_logs = []
 
         # Start with conservative profile (first step needs full context)
@@ -111,15 +113,35 @@ class AdaptiveTauAgent:
             usage = res.usage
             step_input = (usage.prompt_tokens or 0) if usage else 0
             step_output = (usage.completion_tokens or 0) if usage else 0
+
+            # Cached input tokens: the wiki + tool-def preamble is identical
+            # every step, so the provider serves it from cache at ~10% cost.
+            # litellm normalizes DeepSeek's prompt_cache_hit_tokens into
+            # usage.prompt_tokens_details.cached_tokens. This is measurement
+            # only — the model still receives the full, unchanged prompt.
+            step_cached = 0
+            if usage is not None:
+                details = getattr(usage, "prompt_tokens_details", None)
+                if details is not None:
+                    step_cached = getattr(details, "cached_tokens", 0) or 0
+            step_cached = min(step_cached, step_input)
+
             step_cost = res._hidden_params.get("response_cost", 0) or 0
             if not step_cost:
                 model_name = self.config.get_model(ModelTier.STRONG)
                 rate_in = INPUT_COST_PER_MTOK.get(model_name, 0)
                 rate_out = OUTPUT_COST_PER_MTOK.get(model_name, 0)
-                step_cost = (step_input / 1_000_000 * rate_in) + (step_output / 1_000_000 * rate_out)
+                rate_cache = CACHE_READ_COST_PER_MTOK.get(model_name, rate_in)
+                uncached_in = step_input - step_cached
+                step_cost = (
+                    (uncached_in / 1_000_000 * rate_in)
+                    + (step_cached / 1_000_000 * rate_cache)
+                    + (step_output / 1_000_000 * rate_out)
+                )
 
             total_input += step_input
             total_output += step_output
+            total_cached += step_cached
             total_cost += step_cost
 
             # Estimate uncertainty and select next profile
@@ -192,6 +214,7 @@ class AdaptiveTauAgent:
             total_cost=total_cost,
             total_input_tokens=total_input,
             total_output_tokens=total_output,
+            total_cached_tokens=total_cached,
             step_logs=step_logs,
             controller_stats=self.controller.get_stats(),
         )
@@ -294,7 +317,13 @@ def _make_routing_def(tool: dict) -> dict:
     params = func.get("parameters", {})
     slim_props = {}
     for pname, pschema in params.get("properties", {}).items():
-        slim_props[pname] = {"type": pschema.get("type", "string")}
+        slim = {"type": pschema.get("type", "string")}
+        # Keep enum constraints: they are token-cheap but critical for a valid
+        # first call (the model only sees the routing def before discovering a
+        # tool, so without enums it can pass an out-of-range value).
+        if "enum" in pschema:
+            slim["enum"] = pschema["enum"]
+        slim_props[pname] = slim
     return {
         "type": "function",
         "function": {

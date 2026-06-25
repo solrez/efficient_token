@@ -7,7 +7,7 @@ export PYTHONPATH="src:${TAU_BENCH}"
 
 cd "$PROJECT_DIR"
 
-ABLATION_CONFIGS="ablation-no-staleness,ablation-staleness-only,ablation-no-behavioral,ablation-no-progressive"
+ABLATION_CONFIGS="ablation-no-staleness,ablation-staleness-only,ablation-no-behavioral,ablation-no-progressive,ablation-trace-context"
 
 RUNS=(
     "retail 115 ablation_retail"

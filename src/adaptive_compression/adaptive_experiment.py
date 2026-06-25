@@ -113,6 +113,22 @@ class ConfigResult:
         return sum(r["total_input_tokens"] for r in valid) / len(valid)
 
     @property
+    def avg_cached_tokens(self) -> float:
+        valid = [r for r in self.task_results if r["total_steps"] > 0]
+        if not valid:
+            return 0.0
+        return sum(r.get("total_cached_tokens", 0) for r in valid) / len(valid)
+
+    @property
+    def cache_hit_rate(self) -> float:
+        """Fraction of input tokens served from cache (0..1)."""
+        valid = [r for r in self.task_results if r["total_steps"] > 0]
+        total_in = sum(r["total_input_tokens"] for r in valid)
+        if total_in <= 0:
+            return 0.0
+        return sum(r.get("total_cached_tokens", 0) for r in valid) / total_in
+
+    @property
     def cost_of_pass(self) -> float:
         pr = self.pass_rate
         if pr <= 0:
@@ -286,6 +302,7 @@ class AdaptiveExperiment:
                         "total_cost": result.total_cost,
                         "total_input_tokens": result.total_input_tokens,
                         "total_output_tokens": result.total_output_tokens,
+                        "total_cached_tokens": result.total_cached_tokens,
                         "total_steps": result.total_steps,
                     }
                     cr.task_results.append(task_dict)
@@ -360,6 +377,7 @@ class AdaptiveExperiment:
             self._log(f"CONFIG SUMMARY: {config_name}")
             self._log(f"  Pass rate:      {cr.pass_rate:.1%} ({passed}/{completed})")
             self._log(f"  Avg tokens:     {cr.avg_input_tokens:,.0f}")
+            self._log(f"  Cache hit rate: {cr.cache_hit_rate:.1%} ({cr.avg_cached_tokens:,.0f} cached/task)")
             self._log(f"  Avg cost:       ${cr.avg_cost:.4f}")
             self._log(f"  Cost-of-pass:   ${cr.cost_of_pass:.4f}" if cr.cost_of_pass < float("inf") else "  Cost-of-pass:   N/A")
             self._log(f"  Total cost:     ${total_cost_so_far:.4f}")
@@ -517,7 +535,8 @@ class AdaptiveExperiment:
                 with open(path, "w", newline="") as f:
                     csv.writer(f).writerow([
                         "config", "task_id", "reward", "total_cost",
-                        "total_input_tokens", "total_output_tokens", "total_steps",
+                        "total_input_tokens", "total_output_tokens",
+                        "total_cached_tokens", "total_steps",
                     ])
             self._per_task_csv_ready = True
 
@@ -533,7 +552,8 @@ class AdaptiveExperiment:
             csv.writer(f).writerow([
                 result["config"], result["task_id"], result["reward"],
                 f"{cost:.6f}", result["total_input_tokens"],
-                result["total_output_tokens"], result["total_steps"],
+                result["total_output_tokens"],
+                result.get("total_cached_tokens", 0), result["total_steps"],
             ])
 
     def _append_adaptive_step(self, sl):
@@ -573,13 +593,14 @@ class AdaptiveExperiment:
             writer = csv.writer(f)
             writer.writerow([
                 "config", "pass_rate", "avg_cost", "avg_input_tokens",
-                "cost_of_pass", "num_tasks",
+                "avg_cached_tokens", "cache_hit_rate", "cost_of_pass", "num_tasks",
             ])
             for name, cr in all_results.items():
                 valid = [r for r in cr.task_results if r["total_steps"] > 0]
                 writer.writerow([
                     name, f"{cr.pass_rate:.4f}", f"{cr.avg_cost:.6f}",
-                    f"{cr.avg_input_tokens:.0f}", f"{cr.cost_of_pass:.6f}",
+                    f"{cr.avg_input_tokens:.0f}", f"{cr.avg_cached_tokens:.0f}",
+                    f"{cr.cache_hit_rate:.4f}", f"{cr.cost_of_pass:.6f}",
                     len(valid),
                 ])
 

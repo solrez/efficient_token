@@ -168,6 +168,11 @@ CACHE_READ_COST_PER_MTOK = {
     "claude-haiku-4-5": 0.10,
     "gpt-4o": 1.25,
     "gpt-4o-mini": 0.075,
+    # DeepSeek context caching is automatic on repeated prefixes; cache-read
+    # is ~10% of the full input rate. Used to cost-correct cached tokens.
+    "deepseek-v4-flash": 0.014,
+    "deepseek-v4-pro": 0.0435,
+    "deepseek-reasoner": 0.014,
 }
 
 CACHE_WRITE_COST_PER_MTOK = {
