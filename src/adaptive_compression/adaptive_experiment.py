@@ -39,6 +39,7 @@ from token_efficient_agent.config import (
 )
 from adaptive_compression.adaptive_agent import AdaptiveTauAgent, AdaptiveTaskResult
 from adaptive_compression.controller import ThresholdController
+from adaptive_compression.ablation_variants import ABLATION_CONFIGS
 
 console = Console()
 log = logging.getLogger("adaptive_experiment")
@@ -234,7 +235,10 @@ class AdaptiveExperiment:
         all_config_results = {}
 
         # Run each config sequentially (filter by --configs if specified)
+        # "adaptive" and "ablation-*" are special — flags=None signals non-static
         all_configs = list(STATIC_CONFIGS.items()) + [("adaptive", None)]
+        for abl_name in ABLATION_CONFIGS:
+            all_configs.append((abl_name, None))
         if self.only_configs:
             all_configs = [(n, f) for n, f in all_configs if n in self.only_configs]
 
@@ -260,6 +264,10 @@ class AdaptiveExperiment:
                 async with semaphore:
                     if _config_name == "adaptive":
                         return await asyncio.to_thread(self._run_single_adaptive, tid)
+                    elif _config_name in ABLATION_CONFIGS:
+                        return await asyncio.to_thread(
+                            self._run_single_ablation, tid, _config_name
+                        )
                     else:
                         return await asyncio.to_thread(
                             self._run_single_static, tid, _flags, _config_name
@@ -269,10 +277,11 @@ class AdaptiveExperiment:
                 task_start = time.time()
                 result = await run_one(tid)
 
-                if config_name == "adaptive" and isinstance(result, AdaptiveTaskResult):
+                is_adaptive_type = (config_name == "adaptive" or config_name in ABLATION_CONFIGS)
+                if is_adaptive_type and isinstance(result, AdaptiveTaskResult):
                     task_dict = {
                         "task_id": result.task_id,
-                        "config": "adaptive",
+                        "config": config_name,
                         "reward": result.reward,
                         "total_cost": result.total_cost,
                         "total_input_tokens": result.total_input_tokens,
@@ -297,7 +306,7 @@ class AdaptiveExperiment:
 
                 completed += 1
                 task_elapsed = time.time() - task_start
-                reward = task_dict["reward"] if config_name == "adaptive" else result.get("reward", 0)
+                reward = task_dict["reward"] if is_adaptive_type and isinstance(result, AdaptiveTaskResult) else result.get("reward", 0)
                 if reward > 0:
                     passed += 1
                 tid_val = result.task_id if isinstance(result, AdaptiveTaskResult) else result.get("task_id", "?")
@@ -452,6 +461,48 @@ class AdaptiveExperiment:
                     time.sleep(wait)
                     continue
                 self._log(f"Task {tid} (adaptive) FAILED permanently: {str(e)[:200]}", level="error")
+                return AdaptiveTaskResult(
+                    task_id=tid, reward=0.0, total_steps=0,
+                    total_cost=0.0, total_input_tokens=0, total_output_tokens=0,
+                )
+
+    def _run_single_ablation(
+        self, tid: int, ablation_name: str, max_retries: int = 3
+    ) -> AdaptiveTaskResult:
+        from tau_bench.envs import get_env
+
+        abl_config = ABLATION_CONFIGS[ablation_name]
+        agent_class = abl_config["agent_class"]
+        agent_kwargs = abl_config["agent_kwargs"]
+
+        for attempt in range(1, max_retries + 1):
+            try:
+                env = get_env(
+                    env_name=self.domain,
+                    user_strategy="llm",
+                    user_model=USER_SIM_MODEL,
+                    user_provider=USER_SIM_PROVIDER,
+                    task_split="test",
+                )
+                agent = agent_class(
+                    config=self.config,
+                    tools_info=env.tools_info,
+                    wiki=env.wiki,
+                    temperature=self.temperature,
+                    **agent_kwargs,
+                )
+                return agent.solve(env, task_index=tid)
+            except Exception as e:
+                is_transient = any(kw in str(e).lower() for kw in [
+                    "429", "rate", "timeout", "connection", "model busy", "retry",
+                    "overloaded", "502", "503",
+                ])
+                if is_transient and attempt < max_retries:
+                    wait = 2 ** attempt * 5
+                    self._log(f"Task {tid} ({ablation_name}) retry {attempt}/{max_retries}: {str(e)[:100]}", level="warning")
+                    time.sleep(wait)
+                    continue
+                self._log(f"Task {tid} ({ablation_name}) FAILED permanently: {str(e)[:200]}", level="error")
                 return AdaptiveTaskResult(
                     task_id=tid, reward=0.0, total_steps=0,
                     total_cost=0.0, total_input_tokens=0, total_output_tokens=0,
